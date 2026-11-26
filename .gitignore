@@ -1,0 +1,14 @@
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+settings.json
+watch.log
+watch.log.old
+watch.pid
+待打印/
+已打印/
+失败/
+plugin-debug.log
+.DS_Store

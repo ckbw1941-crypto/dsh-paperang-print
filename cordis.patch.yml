@@ -1,0 +1,4 @@
+- insert:
+    - id: paperang-print
+      name: dsh-paperang-print
+      config: {}

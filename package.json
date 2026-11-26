@@ -1,0 +1,57 @@
+{
+  "name": "dsh-paperang-print",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Print on a Paperang (喵喵机) P2 HD thermal printer from DSH: text, pasted images with preview, and a watched folder.",
+  "keywords": [
+    "dsh-plugin",
+    "paperang",
+    "thermal-printer",
+    "bluetooth",
+    "ble",
+    "printing"
+  ],
+  "license": "MIT",
+  "author": "ckbw1941-crypto",
+  "homepage": "https://github.com/ckbw1941-crypto/dsh-paperang-print#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ckbw1941-crypto/dsh-paperang-print.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ckbw1941-crypto/dsh-paperang-print/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "py",
+    "assets",
+    "icon.svg",
+    "screenshots.json"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

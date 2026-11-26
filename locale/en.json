@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Paperang printer",
+    "description": "Print from the left sidebar straight to a Paperang P2 HD: text, pasted or dropped images, the system clipboard, plus a watched folder that prints automatically. Preview the dithered result before printing, and switch grayscale dithering on or off. Print density and trailing feed are adjustable. The printer must be powered on and Bluetooth-paired with this computer.",
+    "detail": "docs/DETAIL.md",
+    "panel": {
+      "title": "Paperang printer",
+      "subtitle": "P2 HD · Bluetooth · 57 mm thermal"
+    }
+  }
+}
