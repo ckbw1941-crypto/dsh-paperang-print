@@ -219,8 +219,8 @@ window.__ModuleLoader__.load({
       const [watching, setWatching] = useState({ running: false, pid: null })
       const [logs, setLogs] = useState([])
       const [env, setEnv] = useState(null)
-      // 彩蛋：连点左上角那个小打印机图标 5 下
-      const eggRef = useRef({ n: 0, last: 0 })
+      // 彩蛋：双击左上角图标，或连点标题 5 下
+      const eggRef = useRef({ icon: { n: 0, last: 0 }, title: { n: 0, last: 0 }, lastEmit: 0 })
 
       const run = useCallback(async (label, fn) => {
         setBusy(label)
@@ -235,15 +235,11 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      // 彩蛋彩蛋：1.2 秒内连点左上角图标 5 下 → 随机打一张 <数据目录>/彩蛋 里的图
-      const tryEgg = () => {
+      // 彩蛋：双击图标 或 连点标题 5 下 → 随机打一张 <数据目录>/彩蛋 里的图
+      const fireEgg = () => {
         const now = Date.now()
-        const state = eggRef.current
-        if (now - state.last > 1200) state.n = 0
-        state.last = now
-        state.n += 1
-        if (state.n < 5) return
-        state.n = 0
+        if (now - eggRef.current.lastEmit < 3000) return
+        eggRef.current.lastEmit = now
         run('彩蛋正在打印…', async () => {
           const value = await call('egg')
           const name = (value && value.name) || '彩蛋'
@@ -251,6 +247,21 @@ window.__ModuleLoader__.load({
           setNote({ kind: 'ok', text: '🎉 你点到了隐藏彩蛋：' + name + '（这个文件夹里现在有 ' + count + ' 张）' })
         })
       }
+
+      const bumpEgg = (key, need, windowMs) => {
+        const now = Date.now()
+        const state = eggRef.current[key]
+        if (now - state.last > windowMs) state.n = 0
+        state.last = now
+        state.n += 1
+        if (state.n >= need) {
+          state.n = 0
+          fireEgg()
+        }
+      }
+
+      const eggIcon = () => bumpEgg('icon', 2, 600)
+      const eggTitle = () => bumpEgg('title', 5, 1500)
 
       const loadQueue = useCallback(async () => {
         try {
@@ -541,11 +552,11 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'mmj-head' },
-          h('div', { className: 'mmj-ico', onClick: tryEgg, title: '' }, h(SidebarIcon, { size: 20 })),
+          h('div', { className: 'mmj-ico', onClick: eggIcon }, h(SidebarIcon, { size: 20 })),
           h(
             'div',
             null,
-            h('h1', null, '喵喵机打印'),
+            h('h1', { onClick: eggTitle }, '喵喵机打印'),
             h('p', null, 'P2 HD · 蓝牙直连 · 57mm 热敏')
           )
         ),
