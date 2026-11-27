@@ -12,6 +12,7 @@ import inspect
 import io
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ FAIL_DIR = DATA / "\u5931\u8d25"
 LOG = DATA / "watch.log"
 PIDF = DATA / "watch.pid"
 IMG_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}
+EGG_DIR = DATA / "彩蛋"
 
 
 def _M():
@@ -351,6 +353,47 @@ def op_grab(_payload):
     }
 
 
+async def op_egg(payload):
+    """彩蛋：从 <数据目录>/彩蛋 里随机挑一张图打出来。"""
+    M = _M()
+    cfg = M.load_settings()
+    EGG_DIR.mkdir(parents=True, exist_ok=True)
+    candidates = [p for p in sorted(EGG_DIR.iterdir()) if p.is_file() and p.suffix.lower() in IMG_EXT]
+    if not candidates:
+        raise RuntimeError("彩蛋文件夹里还没有图：%s" % EGG_DIR)
+    want = str(payload.get("name") or "").strip()
+    pick = None
+    if want:
+        for p in candidates:
+            if p.name == want:
+                pick = p
+                break
+    if pick is None:
+        pick = random.choice(candidates)
+    density = int(payload.get("density") if payload.get("density") is not None else cfg["density"])
+    density = max(0, min(100, density))
+    feed = int(cfg["feed"])
+    rows, h = M.image_to_rows(pick, doc=False, dither=True)
+
+    async def job(printer):
+        st = await printer.status()
+        if st.get("lid") is False:
+            raise RuntimeError("上盖没合上，合上再试一次")
+        if st.get("paper") is False:
+            raise RuntimeError("打印机里没有纸")
+        return await printer.print_bitmap(rows, density=density, post_feed=feed)
+
+    secs = await _run(job)
+    return {
+        "name": pick.name,
+        "rows": h,
+        "density": density,
+        "seconds": round(secs, 1),
+        "count": len(candidates),
+        "dir": str(EGG_DIR),
+    }
+
+
 # ---------------- 入口 ----------------
 
 OPS = {
@@ -358,6 +401,7 @@ OPS = {
     "print": op_print,
     "preview": op_preview,
     "grab": op_grab,
+    "egg": op_egg,
     "test": op_test,
     "settings": op_settings,
     "save": op_save,

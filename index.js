@@ -312,6 +312,7 @@ function activate(ctx, config) {
     print: (payload) => bridgeCall({ op: 'print', ...payload }, 240000),
     preview: (payload) => bridgeCall({ op: 'preview', ...payload }, 60000),
     grab: () => bridgeCall({ op: 'grab' }, 30000),
+    egg: (payload) => bridgeCall({ op: 'egg', ...(payload || {}) }, 240000),
     test: (payload) => bridgeCall({ op: 'test', ...payload }, 240000),
     settings: () => bridgeCall({ op: 'settings' }, 30000),
     save: (payload) => bridgeCall({ op: 'save', ...payload }, 30000),
