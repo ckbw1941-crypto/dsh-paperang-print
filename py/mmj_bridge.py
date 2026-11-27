@@ -14,6 +14,7 @@ import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -76,6 +77,11 @@ def pid_alive(pid):
 
 # ---------------- 打印 ----------------
 
+# 常驻 worker 里复用同一条蓝牙连接：连续打印 / 查询省掉 1~3 秒重连
+SESSION = {"printer": None, "at": 0.0}
+SESSION_IDLE = 20.0
+
+
 async def _open():
     M = _M()
     p = M.Printer()
@@ -83,15 +89,44 @@ async def _open():
     return p
 
 
-async def _run(job):
-    p = await _open()
-    try:
-        return await job(p)
-    finally:
+async def _drop_session():
+    p = SESSION.get("printer")
+    SESSION["printer"] = None
+    SESSION["at"] = 0.0
+    if p is not None:
         try:
             await p.close()
         except Exception:
             pass
+
+
+async def _printer():
+    now = time.time()
+    p = SESSION.get("printer")
+    if p is not None and (now - SESSION["at"]) < SESSION_IDLE:
+        try:
+            if p.client is not None and p.client.is_connected:
+                SESSION["at"] = now
+                return p
+        except Exception:
+            pass
+    await _drop_session()
+    p = await _open()
+    SESSION["printer"] = p
+    SESSION["at"] = time.time()
+    return p
+
+
+async def _run(job):
+    p = await _printer()
+    try:
+        value = await job(p)
+        SESSION["at"] = time.time()
+        return value
+    except Exception:
+        # 打印失败不自动重试（会重复出纸），但把坏连接丢掉，下次重新连
+        await _drop_session()
+        raise
 
 
 def _pil_open_b64(text):
@@ -411,7 +446,75 @@ OPS = {
 }
 
 
+def _readable(text):
+    return any("\u4e00" <= ch <= "\u9fff" for ch in str(text))
+
+
+def _failure(exc):
+    detail = "%s: %s" % (type(exc).__name__, exc)
+    plain = str(exc)
+    low = detail.lower()
+    if "no device" in low or "not found" in low or "没有找到" in detail:
+        return {"code": "offline", "message": "没找到打印机：确认开机、蓝牙已开、离电脑近一点，别被手机占着"}
+    if "上盖" in detail or "没有纸" in detail:
+        return {"code": "printer", "message": plain if _readable(plain) else detail}
+    if "timeout" in low or "超时" in detail:
+        return {"code": "timeout", "message": "打印机没有回应（%s）" % (plain if _readable(plain) else detail)}
+    return {"code": "failed", "message": plain if _readable(plain) else detail}
+
+
+def message(raw, loop=None):
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("需要 JSON 对象")
+    except Exception as exc:
+        return {"ok": False, "error": {"code": "bad-request", "message": "参数不是合法 JSON：%s" % exc}}
+    op = str(payload.get("op") or "")
+    handler = OPS.get(op)
+    if handler is None:
+        return {"ok": False, "error": {"code": "bad-request", "message": "未知操作：%s" % op}}
+    try:
+        if inspect.iscoroutinefunction(handler):
+            value = loop.run_until_complete(handler(payload)) if loop is not None else asyncio.run(handler(payload))
+        else:
+            value = handler(payload)
+        return {"ok": True, "value": value}
+    except Exception as exc:
+        return {"ok": False, "error": _failure(exc)}
+
+
+def emit(msg, stream=None):
+    target = stream if stream is not None else sys.stdout
+    target.write(json.dumps(msg, ensure_ascii=False) + "\n")
+    target.flush()
+
+
+def serve():
+    """常驻模式：stdin 一行一个请求，stdout 一行一个响应，事件循环与已导入的库全程复用。"""
+    out = sys.stdout
+    # 打印动作里的 print（如"找到打印机…"）全部改走 stderr，别污染一行一条的 JSON 协议
+    sys.stdout = sys.stderr
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        for line in sys.stdin:
+            text = line.strip()
+            if not text:
+                continue
+            emit(message(text, loop), out)
+    finally:
+        try:
+            loop.run_until_complete(_drop_session())
+        except Exception:
+            pass
+        sys.stdout = out
+
+
 def main():
+    if "--serve" in sys.argv[1:]:
+        serve()
+        return
     raw = sys.argv[1] if len(sys.argv) > 1 else ""
     if not raw.strip():
         try:
@@ -421,35 +524,7 @@ def main():
             raw = ""
     if not raw.strip():
         raw = "{}"
-    try:
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError("需要 JSON 对象")
-    except Exception as exc:
-        fail("bad-request", "参数不是合法 JSON：%s" % exc)
-        return
-    op = str(payload.get("op") or "")
-    handler = OPS.get(op)
-    if handler is None:
-        fail("bad-request", "未知操作：%s" % op)
-        return
-    try:
-        if inspect.iscoroutinefunction(handler):
-            value = asyncio.run(handler(payload))
-        else:
-            value = handler(payload)
-        reply(value)
-    except Exception as exc:
-        detail = "%s: %s" % (type(exc).__name__, exc)
-        low = detail.lower()
-        if "no device" in low or "not found" in low or "没有找到" in detail:
-            fail("offline", "没找到打印机：确认开机、蓝牙已开、离电脑近一点，别被手机占着")
-        elif "上盖" in detail or "没有纸" in detail:
-            fail("printer", detail)
-        elif "timeout" in low or "超时" in detail:
-            fail("timeout", "打印机没有回应（%s）" % detail)
-        else:
-            fail("failed", detail)
+    emit(message(raw))
 
 
 if __name__ == "__main__":

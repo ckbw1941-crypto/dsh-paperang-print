@@ -42,9 +42,27 @@ try:
 except Exception:
     pass
 SETTINGS = DATA_DIR / "settings.json"
+KNOWN_ADDR = DATA_DIR / "printer.txt"   # 记住上次连上的地址，下次免扫描
 DEFAULT_DENSITY = 70
 DEFAULT_FEED = 30
 DEFAULT_DITHER = True
+
+
+def known_address():
+    try:
+        return KNOWN_ADDR.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def remember_address(address):
+    text = str(address or "").strip()
+    if not text:
+        return
+    try:
+        KNOWN_ADDR.write_text(text + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_settings():
@@ -143,35 +161,69 @@ class Printer:
     # ---- 连接 ----
     async def connect(self, tries=3):
         from bleak import BleakClient, BleakScanner
-        dev = None
-        target = ADDR or None
+        target = ADDR or known_address() or None
         if not target:
-            found = await BleakScanner.discover(timeout=10)
+            found = await BleakScanner.discover(timeout=6)
             for item in found:
                 name = (getattr(item, "name", "") or "").strip()
                 upper = name.upper()
                 if "PAPERANG" in upper or "\u55b5\u55b5" in name or upper.startswith("P2"):
                     target = item.address
-                    dev = item
                     print("  \u627e\u5230\u6253\u5370\u673a\uff1a%s\uff08%s\uff09" % (name, item.address))
                     break
-            if dev is None:
+            if not target:
                 raise RuntimeError(
                     "\u6ca1\u626b\u5230\u55b5\u55b5\u673a\u3002\u8bf7\u786e\u8ba4\u6253\u5370\u673a\u5df2\u5f00\u673a\u3001"
                     "\u7535\u8111\u84dd\u7259\u5df2\u6253\u5f00\u3001\u79bb\u7535\u8111\u8fd1\u4e00\u70b9\uff0c\u4e5f\u6ca1\u88ab\u624b\u673a\u8fde\u7740\u3002"
                 )
-        for i in range(tries):
-            dev = await BleakScanner.find_device_by_address(target, timeout=12)
-            if dev:
-                break
-            print(f"  第 {i + 1} 次没扫到打印机，重试…")
-        if dev is None:
-            raise RuntimeError("没找到打印机。请确认：打印机已开机、蓝牙已打开、离电脑近一点、没被手机连着。")
-        self.client = BleakClient(dev, timeout=25)
-        await self.client.connect()
+
+        # 地址已知时直接连（Windows 有缓存，不必每次先扫 12 秒）；连不上再退回收索 + 重试
+        last_error = None
+        for attempt in range(max(1, tries)):
+            client = BleakClient(target, timeout=20)
+            try:
+                await client.connect()
+            except Exception as exc:
+                last_error = exc
+                print(f"  直连第 {attempt + 1} 次失败：{exc}")
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+                continue
+            self.client = client
+            break
+
+        if getattr(self, "client", None) is None:
+            dev = await BleakScanner.find_device_by_address(target, timeout=8)
+            if dev is None and not ADDR:
+                # 缓存地址过期（换机器 / 地址变了）：重新扫一遍，挑名字像喵喵机的
+                for item in await BleakScanner.discover(timeout=6):
+                    name = (getattr(item, "name", "") or "").strip()
+                    upper = name.upper()
+                    if "PAPERANG" in upper or "\u55b5\u55b5" in name or upper.startswith("P2"):
+                        dev = item
+                        target = item.address
+                        print("  \u91cd\u65b0\u627e\u5230\u6253\u5370\u673a\uff1a%s\uff08%s\uff09" % (name, item.address))
+                        break
+            if dev is None:
+                raise RuntimeError(
+                    "没找到打印机。请确认：打印机已开机、蓝牙已打开、离电脑近一点、没被手机连着。"
+                    + (f"（上次错误：{last_error}）" if last_error else "")
+                )
+            self.client = BleakClient(dev, timeout=25)
+            await self.client.connect()
+
+        # 记住连上的地址，下次直接连，省掉 6~10 秒扫描
+        try:
+            remember_address(getattr(self.client, "address", "") or target)
+        except Exception:
+            pass
+
         for u in (NT, ST):
             await self.client.start_notify(u, self._on_notify)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.15)
         try:
             self.mtu = self.client.mtu_size
         except Exception:

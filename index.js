@@ -94,7 +94,7 @@ function activate(ctx, config) {
     PYTHONUTF8: '1',
   }
 
-  function rawBridge(payload, timeoutMs) {
+  function spawnOnce(payload, timeoutMs) {
     return new Promise((resolve) => {
       let child
       let body = ''
@@ -169,14 +169,154 @@ function activate(ctx, config) {
     })
   }
 
-  async function bridgeCall(payload, timeoutMs) {
-    const result = await rawBridge(payload, timeoutMs || 180000)
-    if (!result || result.ok !== true) {
-      const error = new Error((result && result.error && result.error.message) || '打印服务没有返回结果')
-      error.code = (result && result.error && result.error.code) || 'failed'
-      throw error
+  // ---------------- 常驻打印进程 ----------------
+  // 每次新起 python 都要重新 import numpy/Pillow/bleak（1~2 秒），蓝牙也要重连。
+  // 这里保留一个 --serve 子进程，串行喂请求，打印之间还能复用同一条蓝牙连接。
+  let worker = null
+  let workerChain = Promise.resolve()
+  let workerIdle = null
+  const WORKER_IDLE_MS = 10 * 60 * 1000
+
+  function startWorker() {
+    let child
+    try {
+      child = spawn(pickPython().path, ['-u', bridge, '--serve'], {
+        cwd: PY_DIR,
+        env: childEnv,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    } catch {
+      return null
     }
-    return result.value
+    const state = { child, buffer: '', pending: null, dead: false }
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      state.buffer += chunk
+      for (;;) {
+        const idx = state.buffer.indexOf('\n')
+        if (idx < 0) break
+        const line = state.buffer.slice(0, idx).trim()
+        state.buffer = state.buffer.slice(idx + 1)
+        if (!line) continue
+        const pending = state.pending
+        if (!pending) continue
+        state.pending = null
+        clearTimeout(pending.timer)
+        pending.resolve(line)
+        break
+      }
+    })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', () => {
+      /* python 的调试输出（如"找到打印机…"）走 stderr，忽略 */
+    })
+    child.stdin.on('error', () => {
+      /* 子进程退出时忽略 EPIPE */
+    })
+    const drop = () => {
+      state.dead = true
+      if (worker === state) worker = null
+      const pending = state.pending
+      state.pending = null
+      if (pending) {
+        clearTimeout(pending.timer)
+        pending.resolve(null)
+      }
+    }
+    child.on('close', drop)
+    child.on('error', drop)
+    return state
+  }
+
+  function stopWorker() {
+    if (workerIdle) {
+      clearTimeout(workerIdle)
+      workerIdle = null
+    }
+    const current = worker
+    worker = null
+    if (!current) return
+    current.dead = true
+    try {
+      current.child.stdin.end()
+    } catch {
+      /* ignore */
+    }
+    try {
+      current.child.kill()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function touchWorker() {
+    if (workerIdle) clearTimeout(workerIdle)
+    workerIdle = setTimeout(() => stopWorker(), WORKER_IDLE_MS)
+    if (typeof workerIdle.unref === 'function') workerIdle.unref()
+  }
+
+  function workerCall(payload, timeoutMs) {
+    return new Promise((resolve) => {
+      if (!worker || worker.dead) worker = startWorker()
+      const state = worker
+      if (!state) {
+        resolve(null)
+        return
+      }
+      const timer = setTimeout(() => {
+        if (state.pending && state.pending.timer === timer) {
+          state.pending = null
+          resolve({ ok: false, error: { code: 'timeout', message: '打印超时了，检查打印机是否还连着' } })
+        }
+      }, timeoutMs)
+      state.pending = {
+        timer,
+        resolve: (line) => {
+          if (!line) {
+            resolve(null)
+            return
+          }
+          try {
+            const parsed = JSON.parse(line)
+            resolve(parsed && typeof parsed === 'object' ? parsed : { ok: false, error: { code: 'bad-output', message: line.slice(-400) } })
+          } catch {
+            resolve({ ok: false, error: { code: 'bad-output', message: line.slice(-400) } })
+          }
+        },
+      }
+      try {
+        state.child.stdin.write(JSON.stringify(payload) + '\n', 'utf8')
+      } catch {
+        state.dead = true
+        state.pending = null
+        clearTimeout(timer)
+        worker = null
+        resolve(null)
+      }
+    })
+  }
+
+  function bridgeCall(payload, timeoutMs) {
+    const ms = timeoutMs || 180000
+    const task = async () => {
+      let result = await workerCall(payload, ms)
+      if (!result) result = await spawnOnce(payload, ms) // 常驻进程起不来就退回一次性
+      touchWorker()
+      if (!result || result.ok !== true) {
+        const error = new Error((result && result.error && result.error.message) || '打印服务没有返回结果')
+        error.code = (result && result.error && result.error.code) || 'failed'
+        throw error
+      }
+      return result.value
+    }
+    // 同一个蓝牙连接不能被两个请求同时用，串行排队
+    const run = workerChain.then(task, task)
+    workerChain = run.then(
+      () => {},
+      () => {},
+    )
+    return run
   }
 
   function readPid() {
@@ -327,7 +467,7 @@ function activate(ctx, config) {
   const invoke = async (endpoint, payload) => {
     const handler = handlers[endpoint]
     if (!handler) {
-      return { ok: false, error: { code: 'bad-request', message: '未知操作：' + String(endpoint) } }
+      return { ok: false, error: { code: 'bad-request', message: '未知操作：' + String(endpoint), details: {} } }
     }
     try {
       const value = await handler(payload && typeof payload === 'object' ? payload : {})
@@ -338,6 +478,8 @@ function activate(ctx, config) {
         error: {
           code: (error && error.code) || 'failed',
           message: String(error && error.message ? error.message : error),
+          // connection 的客户端校验要求 error.details 必须是对象，否则整条响应被当成非法
+          details: (error && error.details) || {},
         },
       }
     }
@@ -368,8 +510,21 @@ function activate(ctx, config) {
 
   logger?.info?.('[paperang] 打印通道已就绪（' + via + '）')
 
+  // 预热：先把常驻进程拉起来并 import 好 numpy/Pillow/bleak（约 1~2 秒），
+  // 这样用户第一次点打印时不用再等这一下。
+  const warm = setTimeout(() => {
+    bridgeCall({ op: 'settings' }, 60000).catch(() => {})
+  }, 600)
+  if (typeof warm.unref === 'function') warm.unref()
+
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => () => {
+      try {
+        clearTimeout(warm)
+      } catch {
+        /* ignore */
+      }
+      stopWorker()
       try {
         dispose()
       } catch {
