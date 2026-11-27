@@ -388,10 +388,32 @@ def op_grab(_payload):
     }
 
 
-async def op_egg(payload):
-    """彩蛋：从 <数据目录>/彩蛋 里随机挑一张图打出来。"""
+async def _print_image(path, payload):
+    """把一张图片打成小票，返回打印统计。"""
     M = _M()
     cfg = M.load_settings()
+    density = int(payload.get("density") if payload.get("density") is not None else cfg["density"])
+    density = max(0, min(100, density))
+    feed = int(cfg["feed"])
+    doc = bool(payload.get("doc"))
+    dither = payload.get("dither")
+    dither = bool(cfg["dither"]) if dither is None else bool(dither)
+    rows, h = M.image_to_rows(path, doc=doc, dither=dither)
+
+    async def job(printer):
+        st = await printer.status()
+        if st.get("lid") is False:
+            raise RuntimeError("上盖没合上，合上再试一次")
+        if st.get("paper") is False:
+            raise RuntimeError("打印机里没有纸")
+        return await printer.print_bitmap(rows, density=density, post_feed=feed)
+
+    secs = await _run(job)
+    return {"rows": h, "density": density, "seconds": round(secs, 1)}
+
+
+async def op_egg(payload):
+    """彩蛋：从 <数据目录>/彩蛋 里随机挑一张图打出来。"""
     EGG_DIR.mkdir(parents=True, exist_ok=True)
     candidates = [p for p in sorted(EGG_DIR.iterdir()) if p.is_file() and p.suffix.lower() in IMG_EXT]
     if not candidates:
@@ -405,28 +427,76 @@ async def op_egg(payload):
                 break
     if pick is None:
         pick = random.choice(candidates)
-    density = int(payload.get("density") if payload.get("density") is not None else cfg["density"])
-    density = max(0, min(100, density))
-    feed = int(cfg["feed"])
-    rows, h = M.image_to_rows(pick, doc=False, dither=True)
-
-    async def job(printer):
-        st = await printer.status()
-        if st.get("lid") is False:
-            raise RuntimeError("上盖没合上，合上再试一次")
-        if st.get("paper") is False:
-            raise RuntimeError("打印机里没有纸")
-        return await printer.print_bitmap(rows, density=density, post_feed=feed)
-
-    secs = await _run(job)
+    out = await _print_image(pick, payload)
     return {
         "name": pick.name,
-        "rows": h,
-        "density": density,
-        "seconds": round(secs, 1),
+        "rows": out["rows"],
+        "density": out["density"],
+        "seconds": out["seconds"],
         "count": len(candidates),
         "dir": str(EGG_DIR),
     }
+
+
+def _shortcut_dir():
+    d = DATA / "快捷"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _shortcut_file():
+    d = _shortcut_dir()
+    try:
+        items = sorted(d.iterdir())
+    except Exception:
+        return None
+    for p in items:
+        if p.is_file() and p.suffix.lower() in IMG_EXT:
+            return p
+    return None
+
+
+def op_shortcut_set(payload):
+    """面板里点「设为连按 3 下要打印的图」：把当前图片存成快捷图。"""
+    from PIL import Image
+
+    text = payload.get("image_b64")
+    if not text:
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            raise RuntimeError("没有可保存的图片")
+        img = Image.open(path)
+    else:
+        img = _pil_open_b64(text)
+    img = img.convert("RGB")
+    d = _shortcut_dir()
+    for old in d.iterdir():
+        if old.is_file() and old.suffix.lower() in IMG_EXT:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    name = "快捷.png"
+    target = d / name
+    img.save(target, "PNG")
+    return {"name": target.name, "path": str(target), "width": img.width, "height": img.height, "dir": str(d)}
+
+
+def op_shortcut_info(_payload):
+    p = _shortcut_file()
+    return {"set": p is not None, "name": p.name if p else "", "path": str(p) if p else "", "dir": str(_shortcut_dir())}
+
+
+async def op_shortcut_print(payload):
+    """连按 3 下打印的那张图。"""
+    p = _shortcut_file()
+    if p is None:
+        raise RuntimeError("还没有设置连按 3 下的图：面板里粘贴图片后点「设为连按 3 下要打印的图」")
+    out = await _print_image(p, payload)
+    return {"name": p.name, "rows": out["rows"], "density": out["density"], "seconds": out["seconds"]}
 
 
 # ---------------- 入口 ----------------
@@ -437,6 +507,9 @@ OPS = {
     "preview": op_preview,
     "grab": op_grab,
     "egg": op_egg,
+    "shortcutSet": op_shortcut_set,
+    "shortcutInfo": op_shortcut_info,
+    "shortcutPrint": op_shortcut_print,
     "test": op_test,
     "settings": op_settings,
     "save": op_save,
