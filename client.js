@@ -214,7 +214,6 @@ window.__ModuleLoader__.load({
       const [rotate, setRotate] = useState(0)
       const [image, setImage] = useState(null)
       const [preview, setPreview] = useState(null)
-      const [shortcut, setShortcut] = useState({ set: false, name: '' })
       const [dragOver, setDragOver] = useState(false)
       const [queue, setQueue] = useState({ pending: [], done: [], dir: '' })
       const [watching, setWatching] = useState({ running: false, pid: null })
@@ -237,7 +236,6 @@ window.__ModuleLoader__.load({
       }, [])
 
       // 彩蛋：双击图标 或 连点标题 5 下 → 随机打一张 <数据目录>/彩蛋 里的图
-      // 快捷：连点图标 3 下 → 打「设为连按 3 下」的那张图（2 下要等 420ms 才认，免得和 3 下打架）
       const fireEgg = () => {
         const now = Date.now()
         if (now - eggRef.current.lastEmit < 3000) return
@@ -247,18 +245,6 @@ window.__ModuleLoader__.load({
           const name = (value && value.name) || '彩蛋'
           const count = (value && value.count) || 1
           setNote({ kind: 'ok', text: '🎉 你点到了隐藏彩蛋：' + name + '（这个文件夹里现在有 ' + count + ' 张）' })
-        })
-      }
-
-      const fireShortcut = () => {
-        const now = Date.now()
-        if (now - eggRef.current.lastEmit < 3000) return
-        eggRef.current.lastEmit = now
-        run('正在打印连按 3 下的那张图…', async () => {
-          const value = await call('shortcutPrint')
-          const name = (value && value.name) || '快捷图'
-          const rows = (value && value.rows) || 0
-          setNote({ kind: 'ok', text: '🖨️ 已打印「' + name + '」（' + rows + ' 行）' })
         })
       }
 
@@ -274,26 +260,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const eggIcon = () => {
-        const now = Date.now()
-        const state = eggRef.current.icon
-        if (now - state.last > 900) state.n = 0
-        state.last = now
-        state.n += 1
-        if (state.timer) clearTimeout(state.timer)
-        if (state.n >= 3) {
-          state.n = 0
-          fireShortcut()
-          return
-        }
-        state.timer = setTimeout(() => {
-          const times = eggRef.current.icon
-          if (times.n >= 2) {
-            times.n = 0
-            fireEgg()
-          }
-        }, 420)
-      }
+      const eggIcon = () => bumpEgg('icon', 2, 600)
       const eggTitle = () => bumpEgg('title', 5, 1500)
 
       const loadQueue = useCallback(async () => {
@@ -332,15 +299,6 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const loadShortcut = useCallback(async () => {
-        try {
-          const value = await call('shortcutInfo')
-          if (value) setShortcut({ set: Boolean(value.set), name: value.name || '' })
-        } catch {
-          /* 静默：读不到不影响打印 */
-        }
-      }, [])
-
       const setupEnv = () =>
         run('正在准备打印环境（首次约 1–2 分钟，需要能访问 PyPI）…', async () => {
           const value = await call('setup')
@@ -366,13 +324,12 @@ window.__ModuleLoader__.load({
           await loadWatch()
           await loadQueue()
           await loadLogs()
-          await loadShortcut()
         }
         void boot()
         return () => {
           cancelled = true
         }
-      }, [loadWatch, loadQueue, loadLogs, loadEnv, loadShortcut])
+      }, [loadWatch, loadQueue, loadLogs, loadEnv])
 
       // 面板里任意位置按 Ctrl+V 都能贴图（只要剪贴板里有图片），不用先点输入框
       useEffect(() => {
@@ -401,20 +358,6 @@ window.__ModuleLoader__.load({
         window.addEventListener('paste', onWindowPaste)
         return () => window.removeEventListener('paste', onWindowPaste)
       }, [])
-
-      const saveShortcut = async () => {
-        if (!image) {
-          setNote({ kind: 'err', text: '先粘贴或选一张图片，再点这里' })
-          return
-        }
-        try {
-          await call('shortcutSet', { image_b64: image.b64, name: image.name })
-          await loadShortcut()
-          setNote({ kind: 'ok', text: '记住了：连按左上角小图标 3 下就会打印这张图。' })
-        } catch (error) {
-          setNote({ kind: 'err', text: (error && error.message) || String(error) })
-        }
-      }
 
       const refreshStatus = () =>
         run('正在连打印机…', async () => {
@@ -792,17 +735,6 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'mmj-row', style: { marginTop: '12px' } },
             h('button', { className: 'mmj-btn', disabled, onClick: printClip }, '直接用剪贴板打印')
-          ),
-          h('div', { className: 'mmj-hint' }, '连按左上角小图标 3 下 → 打印你指定的那张图（下面这张按钮设的）。'),
-          h(
-            'div',
-            { className: 'mmj-row', style: { marginTop: '8px' } },
-            h('button', { className: 'mmj-btn', disabled: busy || !image, onClick: saveShortcut }, '设为连按 3 下要打印的图'),
-            h(
-              'span',
-              { className: 'mmj-hint', style: { margin: 0 } },
-              shortcut.set ? '当前：' + shortcut.name : '还没设置'
-            )
           ),
           h('div', { className: 'mmj-hint' }, '也可以按路径打印：'),
           h('input', {

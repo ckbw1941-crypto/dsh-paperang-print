@@ -1,6 +1,6 @@
 {
   "name": "dsh-paperang-print",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "type": "module",
   "description": "Print on a Paperang (喵喵机) P2 HD thermal printer from DSH: text, pasted images with preview, and a watched folder.",
