@@ -13,6 +13,7 @@ import io
 import json
 import os
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -412,9 +413,34 @@ async def _print_image(path, payload):
     return {"rows": h, "density": density, "seconds": round(secs, 1)}
 
 
+BUNDLED_EGGS = Path(__file__).resolve().parent.parent / "assets" / "eggs"
+
+
+def _ensure_eggs():
+    """彩蛋文件夹不存在或为空时，把包里自带的示例图放进去（不覆盖用户已有内容）。"""
+    EGG_DIR.mkdir(parents=True, exist_ok=True)
+    existing = [p for p in EGG_DIR.iterdir() if p.is_file() and p.suffix.lower() in IMG_EXT]
+    if existing or not BUNDLED_EGGS.is_dir():
+        return 0
+    copied = 0
+    try:
+        for src in sorted(BUNDLED_EGGS.iterdir()):
+            if src.is_file() and src.suffix.lower() in IMG_EXT:
+                try:
+                    shutil.copy2(src, EGG_DIR / src.name)
+                    copied += 1
+                except Exception:
+                    pass
+    except Exception:
+        return copied
+    return copied
+
+
 async def op_egg(payload):
     """彩蛋：从 <数据目录>/彩蛋 里随机挑一张图打出来。"""
-    EGG_DIR.mkdir(parents=True, exist_ok=True)
+    copied = _ensure_eggs()
+    if copied:
+        print("彩蛋文件夹是空的，已放入 %d 张自带图" % copied)
     candidates = [p for p in sorted(EGG_DIR.iterdir()) if p.is_file() and p.suffix.lower() in IMG_EXT]
     if not candidates:
         raise RuntimeError("彩蛋文件夹里还没有图：%s" % EGG_DIR)
